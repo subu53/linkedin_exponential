@@ -100,13 +100,44 @@ def main(argv: list[str] | None = None) -> int:
 
     ref = gh("GET", f"/repos/{args.remote}/git/ref/heads/{args.branch}")
     exists = ref.status_code == 200
+    remote_sha = ref.json()["object"]["sha"] if exists else None
+
     if exists and not args.overwrite:
         print(f"FAIL  {args.remote}@{args.branch} exists; pass --overwrite to replace it",
               file=sys.stderr)
         return 5
-    parent_sha = ref.json()["object"]["sha"] if exists else None
-    if parent_sha:
-        print(f"\nforce-updating {args.branch} from {parent_sha[:7]}")
+
+    # Already published? Then do nothing. Re-uploading on top of an existing branch
+    # is how this repository ended up with two full generations of the same
+    # commits: --overwrite moved the ref but the new chain still had the old head
+    # as its parent, so the ref ended up pointing at the tail of the *old* history
+    # plus a duplicate of the new one.
+    local_shas = {c["sha"] for c in commits}
+    if remote_sha and remote_sha in local_shas:
+        print(f"\n{args.branch} is already at {remote_sha[:7]}, which is the tip of this "
+              "local history. Nothing to publish.")
+        return 0
+
+    # Replacing the branch: build a fresh chain that hangs off whatever the branch
+    # currently starts from, rather than off its previous head.
+    parent_sha: str | None = None
+    if remote_sha:
+        # Find the root of the remote chain so we do not orphan the repo's initial
+        # commit (an empty-then-populated repo has no other anchor).
+        cur, root = remote_sha, remote_sha
+        for _ in range(80):
+            c = gh("GET", f"/repos/{args.remote}/git/commits/{cur}")
+            if c.status_code != 200:
+                break
+            parents = c.json().get("parents") or []
+            if not parents:
+                root = cur
+                break
+            cur = parents[0]["sha"]
+        parent_sha = root
+        if parent_sha != remote_sha:
+            print(f"\nreplacing {args.branch}: new chain will hang off its root {parent_sha[:7]},"
+                  f" dropping everything after it (previously at {remote_sha[:7]})")
 
     blob_cache: dict[str, str] = {}
     uploaded = 0
