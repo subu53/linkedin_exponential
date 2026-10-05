@@ -75,8 +75,31 @@ class GH:
         }
 
     def __call__(self, method: str, path: str, **kw):
-        r = requests.request(method, f"{API}{path}", headers=self.h, timeout=60, **kw)
-        return r
+        """One request, retried on transient network and 5xx failures.
+
+        A long sequential upload will eventually hit an SSL drop or a 502. Without
+        a retry the whole run dies mid-way and the branch is left pointing at a
+        partial history, which is worse than failing fast because it looks like it
+        worked.
+        """
+        import time
+
+        attempts = kw.pop("_attempts", 4)
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                r = requests.request(method, f"{API}{path}", headers=self.h, timeout=90, **kw)
+                if r.status_code >= 500 and attempt < attempts - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                return r
+            except requests.exceptions.RequestException as exc:
+                last = exc
+                if attempt < attempts - 1:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                raise
+        raise last if last else RuntimeError("request failed")
 
 
 def git_bytes(*args: str) -> bytes:
