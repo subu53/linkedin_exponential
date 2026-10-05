@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""`lk` bootstrap: makes `import lib` resolve to the vendored engine.
+
+The vendored engine is a plain Python package (`vendor/lib`) whose own scripts
+assume they sit at the repo root. Rather than editing upstream files, we put
+`vendor/` on `sys.path` and hand control to `bin/lk.py`.
+
+Works from any working directory.
+
+Two environment fixes happen here, before anything imports the engine:
+
+1. **UTF-8.** The upstream manual-publish messages contain "✅" and other
+   typography. On a cp1252 Windows console, printing them raises
+   UnicodeEncodeError, so `lk publish` would crash on exactly the draft-only path
+   it is supposed to support. `PYTHONUTF8` and `PYTHONIOENCODING` are set before
+   the interpreter's stdio is first used, and `lk.py` reconfigures the streams as
+   a belt-and-braces measure for embedded callers.
+
+2. **`.env` resolution.** `lib._env.load_env` uses `dotenv.find_dotenv(usecwd=True)`,
+   which walks *up* from the current directory and loads the first `.env` it
+   finds. Run from a home directory, that can load an unrelated `.env` holding
+   unrelated credentials. Upstream then also loads the repo-root `.env`, so the
+   bundle's own keys still arrive - but the unrelated ones arrive too. Loading the
+   bundle's `.env` explicitly first, with `override=False`, makes the bundle's
+   values win for any key it defines and leaves the rest of the process
+   environment untouched.
+"""
+import os
+import runpy
+import sys
+
+BIN = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_root(start):
+    """Locate the bundle root by sentinel rather than by hop count, because the
+    same file sits at `bin/` in the source repo and at the root of an installed
+    copy."""
+    cur = start
+    for _ in range(6):
+        if os.path.isdir(os.path.join(cur, "vendor", "lib")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.dirname(start)
+
+
+ROOT = _find_root(BIN)
+VENDOR = os.path.join(ROOT, "vendor")
+
+# Support libraries vendored into the bundle (currently python-dotenv and PyYAML,
+# fetched once into vendor/.pylibs). Putting this on sys.path first means the
+# engine's own scripts and the vendored tools work without a pip install, which
+# matters because pip cannot reach PyPI in this environment.
+_PYLIBS = os.path.join(VENDOR, ".pylibs")
+if os.path.isdir(_PYLIBS) and _PYLIBS not in sys.path:
+    sys.path.insert(0, _PYLIBS)
+
+# (1) UTF-8 before any stdio is touched.
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+# (2) Load the bundle's own .env, and only that one, as early as possible.
+_env_file = os.path.join(ROOT, ".env")
+if os.path.isfile(_env_file):
+    try:
+        from dotenv import load_dotenv
+
+        # override=False: a real exported variable still beats the file, which is
+        # how every other tool in this ecosystem behaves.
+        load_dotenv(_env_file, override=False)
+    except ImportError:
+        # No python-dotenv: parse it ourselves rather than silently ignoring
+        # every key the user put in the file. Upstream swallows this ImportError
+        # and reads nothing at all, which is indistinguishable from "no keys".
+        try:
+            with open(_env_file, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("'\"")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+        except OSError:
+            pass
+
+for p in (VENDOR, ROOT, BIN):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+os.environ.setdefault("LINKEDIN_SKILLS_ROOT", ROOT)
+
+if __name__ == "__main__":
+    runpy.run_path(os.path.join(BIN, "lk.py"), run_name="__main__")

@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""`linkedin-humanizer` - compatibility shim for a CLI upstream never shipped.
+
+## Why this file exists
+
+Six upstream skills invoke `linkedin-humanizer` as if it were an installed
+binary:
+
+    linkedin-humanizer < draft.txt
+    linkedin-humanizer --mode audit draft.txt
+    linkedin-humanizer --mode profile
+
+It is not one. There is no `bin/`, no console_script and no entry point anywhere
+in upstream - the `--mode` block in `linkedin-humanizer/SKILL.md` is a *convention*
+describing workflows the model is meant to carry out itself. On Claude Code and
+Codex, where the model reads the prose and does the work, that convention is fine.
+On a runtime that tries to actually execute the command, it is `command not found`,
+and the failure lands mid-workflow in the skill that called it.
+
+So this implements the documented surface for real:
+
+  --mode audit  (default)  deterministic rules + a model review pass
+  --mode strict|forensic|all|aesthetic   deterministic rules + a rewrite pass
+  --mode profile           start building a voice profile from sample posts
+  --mode emoji             emoji density, no model needed
+  --mode detectors         explains the multi-detector spread; never claims a pass
+
+Every mode always runs the deterministic checks first, and those need no API key.
+The model pass is additive and is skipped with a clear message when
+`DEEPSEEK_API_KEY` is unset - it is not silently dropped.
+
+## What it will not do
+
+It will not tell you a draft will pass an AI detector. No edit reliably does, and
+upstream's own sub-skill says so. `--mode detectors` documents how much the
+detectors disagree with each other instead of promising a score.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+LK = HERE / "lk.py"
+
+# Upstream mode -> (our `lk review --mode` value, one-line description)
+MODES = {
+    "audit": ("audit", "review a draft against the algorithm and AI-tell rules"),
+    "strict": ("strict", "rewrite: remove every listed tell, keep the meaning"),
+    "forensic": ("forensic", "rewrite: maximum scrub, closest read of the rules"),
+    "all": ("all", "rewrite: every scrub rule applied"),
+    "aesthetic": ("aesthetic", "rewrite: rhythm and layout, not just vocabulary"),
+    "profile": ("profile", "build a voice profile from the operator's own posts"),
+    "emoji": ("emoji", "score emoji density"),
+    "detectors": ("detectors", "explain the multi-detector spread"),
+}
+
+DETECTOR_NOTE = """\
+--mode detectors: what upstream's detector-tester actually establishes
+
+Upstream's sub-skill runs a draft through several hosted detectors (GPTZero,
+Originality.ai, ZeroGPT, Sapling, Copyleaks and others) and documents the
+result. The finding that matters is not any single score. It is that they
+disagree with each other substantially on the same text.
+
+Consequences worth stating plainly to an operator:
+
+  * A "100% human" result from one detector is not evidence. Another will
+    disagree, often by a wide margin.
+  * Because the scores are unstable, they are easy to game by accident and
+    impossible to satisfy deliberately. Chasing them degrades the writing.
+  * This bundle therefore optimises for the things a human reader reacts to -
+    the tells listed in `--explain` - and does not promise a detector result.
+
+Running the real detector sweep needs five separate API keys and outbound
+network access. `bin/lint_draft.py --explain` lists every deterministic rule this
+shim does check, and each one has a right answer.
+"""
+
+
+def _find_lk() -> Path | None:
+    """Prefer bin/lk.py next to us; fall back to a search upward."""
+    if LK.is_file():
+        return LK
+    for parent in HERE.parents:
+        candidate = parent / "bin" / "lk.py"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _run_lk(args: list[str], text: str | None) -> int:
+    lk = _find_lk()
+    if lk is None:
+        print("cannot locate bin/lk.py; run this from inside the bundle", file=sys.stderr)
+        return 3
+    cmd = [sys.executable, str(lk), *args]
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    proc = subprocess.run(
+        cmd,
+        input=text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    return proc.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    p = argparse.ArgumentParser(
+        prog="linkedin-humanizer",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Positional last so both `linkedin-humanizer draft.txt` and
+    # `linkedin-humanizer --mode audit draft.txt` work.
+    p.add_argument("file", nargs="?", help="draft file (or pipe it on stdin)")
+    p.add_argument("--mode", "-m", default="audit", choices=sorted(MODES))
+    p.add_argument("--kind", choices=("post", "comment"), default="post")
+    p.add_argument("--text", help="the draft inline, instead of a file or stdin")
+    p.add_argument("--stdin", action="store_true", help="read the draft from stdin, explicitly")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--rules-only", action="store_true", help="skip the model pass")
+    p.add_argument("--explain", action="store_true", help="print every rule and its threshold")
+    p.add_argument("--list-modes", action="store_true")
+    args = p.parse_args(argv)
+
+    if args.list_modes:
+        width = max(len(m) for m in MODES)
+        for name, (_, blurb) in MODES.items():
+            print(f"{name:<{width}}  {blurb}")
+        return 0
+
+    if args.explain:
+        return _run_lk(["lint", "--explain"], None)
+
+    if args.mode == "detectors":
+        print(DETECTOR_NOTE)
+        return 0
+
+    # Resolve the draft text.
+    text: str | None = None
+    if args.text is not None:
+        text = args.text
+    elif args.file:
+        try:
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"cannot read {args.file}: {exc}", file=sys.stderr)
+            return 2
+    elif not sys.stdin.isatty():
+        text = sys.stdin.read()
+
+    if text is None or not text.strip():
+        p.error("provide a draft file, --text, or pipe the draft on stdin")
+
+    if args.mode == "emoji":
+        return _emoji_report(text, args.json)
+
+    review_mode = MODES[args.mode][0]
+    cmd = ["review", "--mode", review_mode, "--kind", args.kind]
+    if args.json:
+        cmd.append("--json")
+    if args.rules_only:
+        cmd.append("--rules-only")
+    return _run_lk(cmd, text)
+
+
+# ── emoji density: arithmetic, so it runs with no key and no model ────────────
+EMOJI_RANGES = (
+    (0x1F300, 0x1FAFF),   # symbols, pictographs, emoticons, transport, supplemental
+    (0x2600, 0x27BF),     # misc symbols + dingbats
+    (0x2190, 0x21FF),     # arrows
+    (0x2B00, 0x2BFF),     # misc symbols and arrows
+    (0xFE0F, 0xFE0F),     # variation selector-16
+    (0x1F1E6, 0x1F1FF),   # regional indicators (flags)
+)
+
+
+def _is_emoji(ch: str) -> bool:
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in EMOJI_RANGES)
+
+
+def _emoji_report(text: str, as_json: bool) -> int:
+    import json as _json
+
+    emoji = [c for c in text if _is_emoji(c)]
+    stripped = [c for c in emoji if c != "\ufe0f"]
+    lines = text.splitlines()
+    words = max(1, len(text.split()))
+    # A decorative emoji is one doing decorative work; the rules tolerate a
+    # couple, and object to a string of them.
+    per_100 = len(stripped) * 100.0 / max(1, words)
+    verdict = "ok"
+    if len(stripped) >= 8 or per_100 > 3:
+        verdict = "high"
+    elif len(stripped) >= 4:
+        verdict = "elevated"
+
+    report = {
+        "emoji_count": len(stripped),
+        "per_100_words": round(per_100, 2),
+        "verdict": verdict,
+        "unique": sorted(set(stripped)),
+        "lines_with_emoji": [i + 1 for i, line in enumerate(lines) if any(_is_emoji(c) for c in line)],
+    }
+    if as_json:
+        print(_json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"Emoji density: {report['emoji_count']} emoji in {words} words ({report['per_100_words']} per 100)")
+    print(f"Verdict: {verdict}")
+    if report["lines_with_emoji"]:
+        print(f"Lines: {report['lines_with_emoji']}")
+    if verdict != "ok":
+        print("")
+        print("A run of decorative emoji is on the 2026 slop-filter lists. Keep at most")
+        print("one or two, and only where it carries meaning (a checkmark in a list is")
+        print("doing work; three sparkles in a row are not).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
