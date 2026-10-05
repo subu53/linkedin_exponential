@@ -1,0 +1,21 @@
+﻿# Normalise line endings so a Windows checkout and a Linux checkout of this repo
+# produce identical bytes. .py and .md are LF everywhere, including in the working
+# tree on Windows, which is why this is `eol=lf` rather than `text=auto`: the
+# vendored engine, its tests, and the skills all compare file content, and a
+# CRLF checkout makes those comparisons fail for reasons unrelated to the code.
+* text=auto eol=lf
+
+# Binary, never touched by normalisation.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.pdf binary
+*.whl binary
+*.pyc binary
+
+# Keep vendored code byte-identical to upstream: no normalisation at all, so a
+# diff against upstream shows real changes only.
+vendor/lib/** -text
+vendor/tests/** -text
