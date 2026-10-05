@@ -1,0 +1,22 @@
+I build AI systems that run in production, not notebooks. Two of mine are live right now, serving real customers in Kenya, and I did the whole thing on each one: the data work, the model, the API and the deployment that keeps it running for the people who use it.
+
+The first is a WhatsApp sales agent that answers only from a client's live product catalogue, so it cannot invent a price or promise a delivery date. It escalates to a human when it should. Laravel backend, Python AI service, Azure deployment.
+
+The second reads CT scans. EfficientNet-B0 with Grad-CAM, so a radiologist can see where the model looked before trusting it. FastAPI behind a React front end.
+
+What I actually do: I take a model out of a notebook and make it survive contact with users. That means the unglamorous parts. Scheduled jobs instead of manual reruns. Version control so a client can audit what changed. Retrieval grounding so an LLM cannot make things up. Error handling for the day the API returns nothing.
+
+Numbers I can stand behind:
+
+- Automated recurring client reporting, cutting manual effort by over 60%
+- Credit card fraud classifier: 88.8% recall and 0.979 ROC AUC on 284,807 transactions with 0.17% fraud
+- Zindi agriBORA maize price forecasting: ranked 85th of 354, top 25%
+- 15% monthly sales uplift from a data-led commercial recommendation
+
+Background: MSc in Artificial Intelligence at the Open University of Kenya (in progress). BSc in Data Science, KCA University, Second Class Honours Upper Division. Diploma in Mathematics and Statistics, so the statistics under the models are not a black box to me.
+
+Stack I work in daily: Python, SQL, PyTorch, TensorFlow, XGBoost, LightGBM, scikit-learn, FastAPI, Streamlit, Azure, Git.
+
+I am open to remote ML Engineer and Data Scientist roles, and I work comfortably across time zones with European and US teams.
+
+If you are hiring, or you have a model stuck in a notebook that needs to reach users, message me. The fastest way to judge my work is the code: github.com/subu53
