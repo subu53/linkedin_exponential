@@ -118,6 +118,48 @@ def local_commits() -> list[dict]:
     return out
 
 
+def ensure_repo_initialised(gh: GH, remote: str, branch: str) -> None:
+    """Create a bootstrap commit if the repository is empty.
+
+    GitHub's blob API returns HTTP 409 "Git Repository is empty" until the repo has
+    at least one commit, so a repo created through the UI with no README cannot
+    receive blobs at all. A placeholder file provides that commit.
+
+    The placeholder is intentionally absent from every tree we build afterwards, so
+    the final pushed tree does not contain it: it exists only to make the repo
+    non-empty. Should this ever produce a repository whose only content is the
+    placeholder, the file says what happened and how to remove it.
+    """
+    r = gh("GET", f"/repos/{remote}/git/ref/heads/{branch}")
+    if r.status_code == 200:
+        return
+    if r.status_code not in (404, 409):
+        print(f"warning: could not read ref {branch} (HTTP {r.status_code})")
+
+    # Does the repo have any commits at all?
+    commits = gh("GET", f"/repos/{remote}/commits?per_page=1")
+    if commits.status_code == 200 and commits.json():
+        print(f"repo already has commits but no {branch} branch; continuing")
+        return
+
+    print("repo is empty: creating a bootstrap commit so the blob API will accept uploads")
+    body = (
+        "# linkedin-exponential\n\n"
+        "Bootstrap commit. The full history is pushed immediately after this by\n"
+        "`bin/gh_push.py`, which replaces this file's tree entirely. If you can see this\n"
+        "and nothing else, the push failed partway and can be re-run safely.\n"
+    )
+    cr = gh("PUT", f"/repos/{remote}/contents/.bootstrap.md", json={
+        "message": "chore: initialise repository",
+        "content": base64.b64encode(body.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    })
+    if cr.status_code not in (200, 201):
+        raise SystemExit(f"FAIL  could not bootstrap {remote}: HTTP {cr.status_code} "
+                         f"{redact(cr.text[:300])}")
+    print(f"bootstrap commit {cr.json()['commit']['sha'][:7]} on {branch}\n")
+
+
 def build_and_push(gh: GH, remote: str, branch: str, dry: bool) -> int:
     commits = local_commits()
     if not commits:
@@ -141,8 +183,16 @@ def build_and_push(gh: GH, remote: str, branch: str, dry: bool) -> int:
     if r.status_code not in (404, 409):
         print(f"warning: could not check the remote ref (HTTP {r.status_code})")
 
+    # A repo with no commits at all cannot receive blobs, so give it one. That
+    # commit becomes the parent of our first commit, so the history is linear
+    # rather than replacing whatever bootstrap exists.
+    ensure_repo_initialised(gh, remote, branch)
+    ref = gh("GET", f"/repos/{remote}/git/ref/heads/{branch}")
+    parent_sha: str | None = ref.json()["object"]["sha"] if ref.status_code == 200 else None
+    if parent_sha:
+        print(f"chaining onto {parent_sha[:7]}\n")
+
     blob_cache: dict[str, str] = {}
-    parent_sha: str | None = None
     created = 0
 
     for c in commits:
