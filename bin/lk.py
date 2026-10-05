@@ -364,6 +364,42 @@ def scrub(text: str) -> str:
     return SECRETISH.sub(lambda m: redact(m.group(0)), text)
 
 
+def _git_tracked_files() -> set[str]:
+    """Paths git tracks, relative to the bundle root. Empty when not a repo."""
+    import subprocess
+
+    try:
+        p = subprocess.run(["git", "ls-files", "-z"], cwd=str(ROOT),
+                           capture_output=True, timeout=30)
+    except Exception:
+        return set()
+    if p.returncode != 0:
+        return set()
+    return {n for n in p.stdout.decode("utf-8", "replace").split("\x00") if n}
+
+
+def _filled_keys(path: Path) -> list[str]:
+    """Keys in a template that have a value. Placeholders do not count as filled."""
+    import re as _re
+
+    placeholder = _re.compile(r"^(sk_?\.\.\.|apify_api_your|pf_live_\.\.\.|<.*>|your|paste)",
+                              _re.IGNORECASE)
+    out: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip().strip("'\"")
+        if value and not placeholder.match(value):
+            out.append(key.strip())
+    return out
+
+
 # ---- doctor ----------------------------------------------------------------
 def cmd_doctor(args: argparse.Namespace) -> int:
     report: dict = {"bundle": {}, "integrations": {}, "skills": {}, "problems": []}
@@ -469,6 +505,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"{env_files[0]} exists but nothing loaded it, so its values are not reaching "
             "the process. Export the variables in your shell instead, or install python-dotenv."
         )
+
+    # --- .env privacy. A live key in a tracked or published file is the usual way
+    # credentials leak, and the usual cause is a template someone filled in.
+    tracked = _git_tracked_files()
+    for candidate in (ROOT / ".env", VENDOR / ".env"):
+        if candidate.is_file():
+            try:
+                rel = candidate.relative_to(ROOT).as_posix()
+            except ValueError:
+                continue
+            if rel in tracked:
+                report["problems"].append(
+                    f"{rel} is TRACKED BY GIT and holds live credentials. It must be "
+                    "gitignored. Fix with: git rm --cached " + rel
+                )
+    example = ROOT / ".env.example"
+    if example.is_file():
+        filled = _filled_keys(example)
+        if filled:
+            report["problems"].append(
+                ".env.example has real values in " + ", ".join(filled) + ". It is a template "
+                "and it is published, so a filled-in template is a credential file. Empty "
+                "those values; keep the real ones in .env, which is gitignored."
+            )
 
     # --- skills
     skills = discover_skills()
