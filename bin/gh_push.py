@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -78,11 +79,20 @@ class GH:
         return r
 
 
-def git(*args: str) -> str:
-    p = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True, text=True)
+def git_bytes(*args: str) -> bytes:
+    """Run git and return raw bytes.
+
+    Blob upload needs the exact bytes. `git show` through a text pipe would decode
+    and re-encode, silently corrupting any binary file in the tree.
+    """
+    p = subprocess.run(["git", *args], cwd=str(ROOT), capture_output=True)
     if p.returncode != 0:
-        raise SystemExit(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+        raise SystemExit(f"git {' '.join(args)} failed: {p.stderr.decode('utf-8', 'replace').strip()}")
     return p.stdout
+
+
+def git(*args: str) -> str:
+    return git_bytes(*args).decode("utf-8", "replace")
 
 
 def local_commits() -> list[dict]:
@@ -138,14 +148,13 @@ def build_and_push(gh: GH, remote: str, branch: str, dry: bool) -> int:
     for c in commits:
         entries = []
         for rel in c["files"]:
-            data = git("show", f"{c['sha']}:{rel}")
-            key = f"{rel}:{hash(data)}"
+            # Key on a stable content digest, not Python's hash(), which is salted
+            # per process, and not the path alone, so identical content is uploaded
+            # once across all commits.
+            content = git_bytes("show", f"{c['sha']}:{rel}")
+            key = hashlib.sha1(content).hexdigest()
             sha = blob_cache.get(key)
             if sha is None:
-                content = subprocess.run(
-                    ["git", "show", f"{c['sha']}:{rel}"], cwd=str(ROOT),
-                    capture_output=True,
-                ).stdout
                 resp = gh("POST", f"/repos/{remote}/git/blobs", json={
                     "content": base64.b64encode(content).decode("ascii"),
                     "encoding": "base64",
