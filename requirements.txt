@@ -1,0 +1,11 @@
+# Runtime dependencies for the DeepSeek build of linkedin-skills.
+#
+# These mirror upstream (vendor/requirements.txt) exactly. `lk doctor` tells you
+# which are actually installed and what degrades without them.
+
+# Read layer (Apify) and write layer (Publora) both use requests.
+requests>=2.31.0
+
+# Loads .env so API keys reach the process. Optional: without it you can set
+# the variables in your shell instead, and `lk doctor` says so.
+python-dotenv>=1.2.3

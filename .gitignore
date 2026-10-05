@@ -1,0 +1,32 @@
+# Secrets. The bundle is useless to a stranger without these, and dangerous
+# with them, so they never get committed.
+.env
+*.env
+!.env.example
+vendor/.env
+
+# Local scratch: sample API responses, validation reports, test drafts.
+testing/
+scratch/
+*.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Support libraries fetched by `bin/vendor_test.py --provision` (PyYAML for the
+# frontmatter tests). Large, platform-specific, and re-provisionable.
+vendor/.pylibs/
+
+# Skill-local `vendor/` entries are junctions created by bin/install_skills.py so
+# that each skill resolves its references at any install depth. They are not
+# content, and git would follow them into a duplicate of vendor/. Recreate with
+# `python bin/install_skills.py --target skills --method link --force`.
+skills/*/vendor
+
+# Canonical voice profile and Story Bank contain real names, numbers, and
+# client details once filled in. Ship the templates, not the filled copies.
+voice-profile.local.md
+story-bank.local.md

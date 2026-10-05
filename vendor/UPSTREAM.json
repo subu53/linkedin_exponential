@@ -1,0 +1,21 @@
+{
+  "source": "https://github.com/sergebulaev/linkedin-skills",
+  "commit": "2f00424615b9853e8b1aa003d8752179bbeabb09",
+  "version": "1.1.16",
+  "vendored_at": "2026-01-01",
+  "license": "MIT",
+  "author": "Serge Bulaev",
+  "vendored_paths": [
+    "lib/",
+    "references/",
+    "scripts/",
+    "tests/",
+    "skills/",
+    ".env.example",
+    "AGENTS.md",
+    "SECURITY.md",
+    "LICENSE",
+    "requirements.txt"
+  ],
+  "note": "Files under vendor/ are upstream and are never edited by this build. Re-run the vendor step to pick up upstream changes. This directory is the single source of truth for the craft instructions; the skills in ../skills/ wrap it."
+}
